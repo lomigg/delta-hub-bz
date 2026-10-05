@@ -1,7 +1,7 @@
--- main.lua — Delta Hub v3.4.0 — auto-published by BluezyGPT
+-- main.lua — Delta Hub v3.4.1 — auto-published by BluezyGPT
 -- Architecture: clean MVC, anti-duplicate, mobile+PC responsive GUI
 -- Repo: lomigg/delta-hub-bz (public), branch: main
--- v3.4.0: Steal An Egg features (verified internals from real game scripts)
+-- v3.4.1: FIX ScrollingFrame canvas width (buttons invisible bug)
 
 -- ===================== SERVICES =====================
 local Players           = game:GetService("Players")
@@ -492,7 +492,7 @@ function Hub.Build()
     versionLabel.TextColor3 = Theme.TextDim
     versionLabel.TextXAlignment = Enum.TextXAlignment.Left
     versionLabel.TextYAlignment = Enum.TextYAlignment.Center
-    versionLabel.Text = "v3.4.0 - BluezyGPT"
+    versionLabel.Text = "v3.4.1 - BluezyGPT"
     versionLabel.Parent = titleBar
 
     local closeBtn = Instance.new("TextButton")
@@ -580,7 +580,7 @@ function Hub.Build()
         page.BackgroundTransparency = 1
         page.ScrollBarThickness = 3
         page.ScrollBarImageColor3 = Theme.Stroke
-        page.CanvasSize = UDim2.new(0, 0, 0, 0)
+        page.CanvasSize = UDim2.new(1, 0, 0, 0)
         page.AutomaticCanvasSize = Enum.AutomaticSize.Y
         page.Visible = false
         page.Parent = contentArea
@@ -1421,7 +1421,7 @@ local ok = pcall(function()
     local lblMain = Widgets.Label("QUICK ACTIONS")
     lblMain.Parent = pageMain
     local btnUnload = Widgets.Button("Unload Hub", function()
-        NotifySys.Push("Delta Hub", "กำลังปิด...", "warn")
+        NotifySys.Push("Delta Hub", "Closing...", "warn")
         task.wait(0.3)
         local g = CoreGui:FindFirstChild(HUB_ID)
         if g then g:Destroy() end
@@ -1429,13 +1429,18 @@ local ok = pcall(function()
     btnUnload.Parent = pageMain
     local btnCopyDiscord = Widgets.Button("Copy Discord", function()
         if setclipboard then setclipboard("https://discord.gg/bluezygpt") end
-        NotifySys.Push("Discord", "คัดลอกแล้ว", "success")
+        NotifySys.Push("Discord", "Copied", "success")
     end)
     btnCopyDiscord.Parent = pageMain
     local btnRejoin = Widgets.Button("Rejoin Server", function()
         game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
     end)
     btnRejoin.Parent = pageMain
+
+    local lblMainInfo = Widgets.Label("INFO")
+    lblMainInfo.Parent = pageMain
+    local lblMainInfo2 = Widgets.Label("Delta Hub v3.4.1 - tab SAE for Steal An Egg")
+    lblMainInfo2.Parent = pageMain
 
     -- ============= STEAL AN EGG TAB =============
     local lblSae = Widgets.Label("STEAL AN EGG (verified)")
@@ -1557,7 +1562,7 @@ local ok = pcall(function()
 
     task.spawn(function()
         task.wait(0.5)
-        NotifySys.Push("Delta Hub v3.4.0", "Loaded - Hello BZMEMBER", "success")
+        NotifySys.Push("Delta Hub v3.4.1", "Loaded - Hello BZMEMBER", "success")
         task.wait(2)
         NotifySys.Push("Tip", "Right-Ctrl ซ่อน/แสดง - Drag title bar", "info")
     end)
