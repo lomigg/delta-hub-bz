@@ -1,6 +1,7 @@
--- main.lua — Delta Hub v3.2.0 — auto-published by BluezyGPT
+-- main.lua — Delta Hub v3.2.1 — auto-published by BluezyGPT
 -- Architecture: clean MVC, anti-duplicate, mobile+PC responsive GUI
--- Repo: BZMEMBER/delta-hub (private), branch: main
+-- Repo: lomigg/delta-hub-bz (public), branch: main
+-- Fixes: visible buttons (Card+Stroke), title layout, dot->dash, tab auto-size
 
 -- ===================== SERVICES =====================
 local Players           = game:GetService("Players")
@@ -213,22 +214,22 @@ function Widgets.Toggle(text, default, callback)
 
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(1, 0, 0, 38)
-    btn.BackgroundColor3 = Theme.BgLight
+    btn.BackgroundColor3 = Theme.Card
     btn.BorderSizePixel = 0
     btn.Text = ""
     btn.AutoButtonColor = false
     btn.Parent = nil
     Utils.Round(btn, 6)
+    local stroke = Utils.Stroke(btn, Theme.Stroke, 1)
 
     local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
     label.Position = UDim2.new(0, 12, 0, 0)
     label.Size = UDim2.new(1, -60, 1, 0)
-    label.Font = Enum.Font.Gotham
+    label.Font = Enum.Font.GothamBold
     label.TextSize = 13
     label.TextColor3 = Theme.Text
     label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Text = text
     label.Parent = btn
 
     local track = Instance.new("Frame")
@@ -265,24 +266,27 @@ end
 
 function Widgets.Button(text, callback)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, 34)
-    btn.BackgroundColor3 = Theme.BgLight
+    btn.Size = UDim2.new(1, 0, 0, 36)
+    btn.BackgroundColor3 = Theme.Card
     btn.BorderSizePixel = 0
-    btn.Font = Enum.Font.Gotham
+    btn.Font = Enum.Font.GothamBold
     btn.TextSize = 13
     btn.TextColor3 = Theme.Text
     btn.Text = text
     btn.AutoButtonColor = false
     Utils.Round(btn, 6)
+    local stroke = Utils.Stroke(btn, Theme.Stroke, 1)
 
     btn.MouseButton1Enter:Connect(function()
-        Utils.Tween(btn, {BackgroundColor3 = Theme.Card})
+        Utils.Tween(btn, {BackgroundColor3 = Theme.Accent})
+        Utils.Tween(stroke, {Color = Theme.AccentHv})
     end)
     btn.MouseButton1Leave:Connect(function()
-        Utils.Tween(btn, {BackgroundColor3 = Theme.BgLight})
+        Utils.Tween(btn, {BackgroundColor3 = Theme.Card})
+        Utils.Tween(stroke, {Color = Theme.Stroke})
     end)
     btn.MouseButton1Click:Connect(function()
-        Utils.Tween(btn, {BackgroundColor3 = Theme.Accent}, 0.08)
+        Utils.Tween(btn, {BackgroundColor3 = Theme.AccentHv}, 0.08)
         task.wait(0.08)
         Utils.Tween(btn, {BackgroundColor3 = Theme.Card})
         if callback then callback() end
@@ -296,9 +300,10 @@ function Widgets.Slider(text, min, max, default, callback)
 
     local holder = Instance.new("Frame")
     holder.Size = UDim2.new(1, 0, 0, 44)
-    holder.BackgroundColor3 = Theme.BgLight
+    holder.BackgroundColor3 = Theme.Card
     holder.BorderSizePixel = 0
     Utils.Round(holder, 6)
+    Utils.Stroke(holder, Theme.Stroke, 1)
 
     local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
@@ -458,26 +463,36 @@ function Hub.Build()
     cover.BorderSizePixel = 0
     cover.Parent = titleBar
 
+    local logoFrame = Instance.new("Frame")
+    logoFrame.Size = UDim2.new(0, 16, 0, 16)
+    logoFrame.Position = UDim2.new(0, 14, 0, 12)
+    logoFrame.BackgroundColor3 = Theme.Accent
+    logoFrame.BorderSizePixel = 0
+    logoFrame.Parent = titleBar
+    Utils.Round(logoFrame, 4)
+
     local title = Instance.new("TextLabel")
     title.BackgroundTransparency = 1
-    title.Position = UDim2.new(0, 14, 0, 0)
-    title.Size = UDim2.new(1, -100, 1, 0)
+    title.Position = UDim2.new(0, 38, 0, 6)
+    title.Size = UDim2.new(1, -100, 0, 18)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 14
     title.TextColor3 = Theme.Text
     title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Text = "Δ Delta Hub"
+    title.TextYAlignment = Enum.TextYAlignment.Center
+    title.Text = "Delta Hub"
     title.Parent = titleBar
 
     local versionLabel = Instance.new("TextLabel")
     versionLabel.BackgroundTransparency = 1
-    versionLabel.Position = UDim2.new(0, 14, 0, 22)
+    versionLabel.Position = UDim2.new(0, 38, 0, 24)
     versionLabel.Size = UDim2.new(1, -100, 0, 12)
     versionLabel.Font = Enum.Font.Gotham
     versionLabel.TextSize = 10
     versionLabel.TextColor3 = Theme.TextDim
     versionLabel.TextXAlignment = Enum.TextXAlignment.Left
-    versionLabel.Text = "v3.2.0 · by BluezyGPT for BZMEMBER"
+    versionLabel.TextYAlignment = Enum.TextYAlignment.Center
+    versionLabel.Text = "v3.2.1 - BluezyGPT"
     versionLabel.Parent = titleBar
 
     local closeBtn = Instance.new("TextButton")
@@ -495,7 +510,7 @@ function Hub.Build()
     closeX.Font = Enum.Font.GothamBold
     closeX.TextSize = 14
     closeX.TextColor3 = Theme.Text
-    closeX.Text = "×"
+    closeX.Text = "X"
     closeX.Parent = closeBtn
 
     closeBtn.MouseButton1Click:Connect(function()
@@ -541,16 +556,21 @@ function Hub.Build()
 
     function Hub.AddTab(name, icon)
         local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(0, 80, 1, 0)
+        btn.Size = UDim2.new(0, 0, 1, 0)
+        btn.AutomaticSize = Enum.AutomaticSize.X
         btn.BackgroundColor3 = Theme.BgLight
         btn.BorderSizePixel = 0
-        btn.Font = Enum.Font.Gotham
-        btn.TextSize = 12
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 11
         btn.TextColor3 = Theme.Text
-        btn.Text = (icon or "□") .. "  " .. name
+        btn.Text = "  " .. name .. "  "
         btn.AutoButtonColor = false
         btn.Parent = tabBar
         Utils.Round(btn, 6)
+        local pad = Instance.new("UIPadding")
+        pad.PaddingLeft = UDim.new(0, 6)
+        pad.PaddingRight = UDim.new(0, 6)
+        pad.Parent = btn
 
         btn.MouseButton1Click:Connect(function() switchTab(name) end)
         tabBtns[name] = btn
@@ -582,7 +602,7 @@ function Hub.Build()
         floatBtn.Size = UDim2.new(0, 44, 0, 44)
         floatBtn.Position = UDim2.new(0, 12, 0.5, -22)
         floatBtn.BackgroundColor3 = Theme.Accent
-        floatBtn.Text = "Δ"
+        floatBtn.Text = "D"
         floatBtn.Font = Enum.Font.GothamBold
         floatBtn.TextSize = 18
         floatBtn.TextColor3 = Theme.Text
@@ -613,7 +633,7 @@ function Hub.Build()
     minIcon.Font = Enum.Font.GothamBold
     minIcon.TextSize = 14
     minIcon.TextColor3 = Theme.Text
-    minIcon.Text = "—"
+    minIcon.Text = "_"
     minIcon.Parent = minBtn
 
     local minimized = false
@@ -810,11 +830,11 @@ end
 local ok = pcall(function()
     Hub.Build()
 
-    local pageMain = Hub.AddTab("Main", "■")
-    local pageCombat = Hub.AddTab("Combat", "⚔")
-    local pageVisuals = Hub.AddTab("Visuals", "👁")
-    local pagePlayer = Hub.AddTab("Player", "⚽")
-    local pageSettings = Hub.AddTab("Settings", "⚙")
+    local pageMain = Hub.AddTab("Main")
+    local pageCombat = Hub.AddTab("Combat")
+    local pageVisuals = Hub.AddTab("Visuals")
+    local pagePlayer = Hub.AddTab("Player")
+    local pageSettings = Hub.AddTab("Settings")
 
     local lblMain = Widgets.Label("QUICK ACTIONS")
     lblMain.Parent = pageMain
@@ -895,7 +915,7 @@ local ok = pcall(function()
     local btnReload = Widgets.Button("Reload Hub", function()
         local g = CoreGui:FindFirstChild(HUB_ID)
         if g then g:Destroy() end
-        loadstring(game:HttpGet("RAW_URL_PLACEHOLDER/main.lua"))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/lomigg/delta-hub-bz/main/main.lua"))()
     end)
     btnReload.Parent = pageSettings
 
@@ -903,9 +923,9 @@ local ok = pcall(function()
 
     task.spawn(function()
         task.wait(0.5)
-        NotifySys.Push("Delta Hub v3.2.0", "โหลดสำเร็จ — สวัสดี BZMEMBER", "success")
+        NotifySys.Push("Delta Hub v3.2.1", "โหลดสำเร็จ - สวัสดี BZMEMBER", "success")
         task.wait(2)
-        NotifySys.Push("Tip", "Right-Ctrl ซ่อน/แสดง · Drag title bar", "info")
+        NotifySys.Push("Tip", "Right-Ctrl ซ่อน/แสดง - Drag title bar", "info")
     end)
 
     trackConn(UserInputService.InputBegan:Connect(function(input, gpe)
@@ -927,6 +947,6 @@ local ok = pcall(function()
 end)
 
 if not ok then
-    warn("[Delta Hub] build error — check syntax")
+    warn("[Delta Hub] build error - check syntax")
     error("Delta Hub failed to initialize")
 end
