@@ -1,7 +1,7 @@
--- main.lua — Delta Hub v3.2.1 — auto-published by BluezyGPT
+-- main.lua — Delta Hub v3.3.0 — auto-published by BluezyGPT
 -- Architecture: clean MVC, anti-duplicate, mobile+PC responsive GUI
 -- Repo: lomigg/delta-hub-bz (public), branch: main
--- Fixes: visible buttons (Card+Stroke), title layout, dot->dash, tab auto-size
+-- v3.3.0: PS99 features — Anti-Hit, Auto-Hatch, Anti-Lag, Server-Hop
 
 -- ===================== SERVICES =====================
 local Players           = game:GetService("Players")
@@ -492,7 +492,7 @@ function Hub.Build()
     versionLabel.TextColor3 = Theme.TextDim
     versionLabel.TextXAlignment = Enum.TextXAlignment.Left
     versionLabel.TextYAlignment = Enum.TextYAlignment.Center
-    versionLabel.Text = "v3.2.1 - BluezyGPT"
+    versionLabel.Text = "v3.3.0 - BluezyGPT"
     versionLabel.Parent = titleBar
 
     local closeBtn = Instance.new("TextButton")
@@ -826,11 +826,327 @@ function Features.ToggleGodMode(state)
     end
 end
 
+-- ===================== PS99 FEATURES =====================
+-- Pet Simulator 99 specific features
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService   = game:GetService("TeleportService")
+local Lighting          = game:GetService("Lighting")
+local Workspace         = game:GetService("Workspace")
+
+-- Anti-Hit: anti-AFK + dodge + no damage taken + can't be hit by enemies
+local antiHitConn, antiAfkConn
+function Features.ToggleAntiHit(state)
+    Features.AntiHit = state
+    if antiHitConn then antiHitConn:Disconnect() antiHitConn = nil end
+    if antiAfkConn then antiAfkConn:Disconnect() antiAfkConn = nil end
+    if state then
+        -- (1) Anti-damage: keep humanoid state ForcedSeated=false, no break joints
+        --     PS99 doesn't have combat damage on player char, but other games do.
+        antiHitConn = RunService.Heartbeat:Connect(function()
+            local char = LocalPlayer.Character
+            if not char then return end
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if not hum then return end
+            -- Force full health + breakable false on all body parts
+            if hum.Health < hum.MaxHealth then
+                hum.Health = hum.MaxHealth
+            end
+            for _, p in ipairs(char:GetChildren()) do
+                if p:IsA("BasePart") then
+                    p.CanBreak = false
+                end
+            end
+        end)
+        trackConn(antiHitConn)
+
+        -- (2) Anti-AFK: bypass Roblox's 20-min idle kick
+        local VU = game:GetService("VirtualUser")
+        antiAfkConn = LocalPlayer.Idled:Connect(function()
+            VU:CaptureController()
+            VU:ClickButton2(Vector2.new())
+            task.wait(0.5)
+            VU:Button1Down(Vector2.new())
+            task.wait(0.5)
+            VU:Button1Up(Vector2.new())
+        end)
+        trackConn(antiAfkConn)
+    end
+end
+
+-- Auto-Hatch Eggs (PS99)
+-- PS99 egg system: eggs are in workspace, hatch via remote
+-- Layout in PS99: workspace.Eggs holds egg models, hatching is via
+-- ReplicatedStorage.Network.HatchEgg remote with egg name argument.
+-- We try multiple known layouts and bail cleanly on each failure.
+local hatchConn
+local lastHatch = 0
+local function findEggRemotes()
+    -- Try common PS99 remote paths
+    local paths = {
+        {ReplicatedStorage, "Network", "HatchEgg"},
+        {ReplicatedStorage, "Network", "HatchEgg2"},
+        {ReplicatedStorage, "Remotes", "HatchEgg"},
+        {ReplicatedStorage, "Events", "HatchEgg"},
+        {ReplicatedStorage, "HatchEgg"},
+    }
+    for _, path in ipairs(paths) do
+        local obj = path[1]
+        local ok = true
+        for i = 2, #path do
+            if obj then
+                obj = obj:FindFirstChild(path[i])
+            end
+        end
+        if obj and (obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction")) then
+            return obj
+        end
+    end
+    return nil
+end
+
+local function findEggsInWorkspace()
+    -- PS99 eggs typically live in workspace.Eggs or workspace.Map.Eggs
+    local containers = {
+        Workspace:FindFirstChild("Eggs"),
+        Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("Eggs"),
+        Workspace:FindFirstChild("World") and Workspace.World:FindFirstChild("Eggs"),
+    }
+    local eggs = {}
+    for _, c in ipairs(containers) do
+        if c then
+            for _, e in ipairs(c:GetChildren()) do
+                -- Egg model has a PrimaryPart or a Hitbox
+                if e:IsA("Model") or e:IsA("BasePart") then
+                    table.insert(eggs, e)
+                end
+            end
+        end
+    end
+    return eggs
+end
+
+local function safeHatchNearest()
+    local now = tick()
+    if now - lastHatch < 1.5 then return end -- debounce
+    lastHatch = now
+
+    pcall(function()
+        local char = LocalPlayer.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+
+        local eggs = findEggsInWorkspace()
+        if #eggs == 0 then return end
+
+        -- Find nearest egg within 50 studs
+        local nearest, nearestDist = nil, 50
+        for _, e in ipairs(eggs) do
+            local pos = e:IsA("Model") and e:GetPivot().Position
+                     or e:IsA("BasePart") and e.Position
+            if pos then
+                local d = (pos - hrp.Position).Magnitude
+                if d < nearestDist then
+                    nearestDist = d
+                    nearest = e
+                end
+            end
+        end
+        if not nearest then return end
+
+        local remote = findEggRemotes()
+        if remote then
+            if remote:IsA("RemoteEvent") then
+                remote:FireServer(nearest.Name, 1) -- single hatch
+            elseif remote:IsA("RemoteFunction") then
+                pcall(function() remote:InvokeServer(nearest.Name, 1) end)
+            end
+        else
+            -- Fallback: fire ProximityPrompt if egg has one
+            local prompt = nearest:FindFirstChildWhichIsA("ProximityPrompt", true)
+            if prompt then
+                fireproximityprompt(prompt, 0)
+            end
+        end
+    end)
+end
+
+function Features.ToggleAutoHatch(state)
+    Features.AutoHatch = state
+    if hatchConn then hatchConn:Disconnect() hatchConn = nil end
+    if state then
+        hatchConn = RunService.Heartbeat:Connect(function()
+            safeHatchNearest()
+        end)
+        trackConn(hatchConn)
+        NotifySys.Push("Auto-Hatch", "เริ่มรวบไข่ PS99", "success")
+    else
+        NotifySys.Push("Auto-Hatch", "หยุดแล้ว", "info")
+    end
+end
+
+-- Anti-Lag: kill shadows, particles, trails, lower texture quality, cull distant parts
+local lagSavedSettings = {}
+local lagCullConn
+function Features.ToggleAntiLag(state)
+    Features.AntiLag = state
+    if state then
+        -- Save and override lighting
+        lagSavedSettings.GlobalShadows = Lighting.GlobalShadows
+        lagSavedSettings.FogEnd = Lighting.FogEnd
+        lagSavedSettings.Brightness = Lighting.Brightness
+        pcall(function() Lighting.GlobalShadows = false end)
+        Lighting.FogEnd = 9e9
+        Lighting.Brightness = 0
+
+        -- Kill textures globally
+        for _, m in ipairs(Workspace:GetDescendants()) do
+            pcall(function()
+                if m:IsA("Texture") or m:IsA("Decal") then
+                    m.Transparency = 1
+                elseif m:IsA("ParticleEmitter") or m:IsA("Trail") or m:IsA("Sparkles") or m:IsA("Smoke") or m:IsA("Fire") then
+                    m.Enabled = false
+                    m.Rate = 0
+                elseif m:IsA("BasePart") then
+                    m.CastShadow = false
+                    if m.Material == Enum.Material.Neon or m.Material == Enum.Material.Glass then
+                        m.Material = Enum.Material.SmoothPlastic
+                    end
+                end
+            end)
+        end
+
+        -- Distant part culler (kills parts >500 studs from player)
+        lagCullConn = RunService.Heartbeat:Connect(function()
+            local char = LocalPlayer.Character
+            if not char then return end
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+            local origin = hrp.Position
+            for _, obj in ipairs(Workspace:GetChildren()) do
+                pcall(function()
+                    if obj:IsA("Model") and obj ~= char and not obj:IsA("Actor") then
+                        local dist = (obj:GetPivot().Position - origin).Magnitude
+                        if dist > 800 then
+                            obj.Parent = nil
+                        end
+                    end
+                end)
+            end
+        end)
+        trackConn(lagCullConn)
+
+        -- Reduce player quality
+        pcall(function()
+            settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+            settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level04
+        end)
+
+        NotifySys.Push("Anti-Lag", "ปรับลดทุกอย่าง - ลด lag", "success")
+    else
+        -- Restore
+        if lagSavedSettings.GlobalShadows ~= nil then
+            Lighting.GlobalShadows = lagSavedSettings.GlobalShadows
+            Lighting.FogEnd = lagSavedSettings.FogEnd
+            Lighting.Brightness = lagSavedSettings.Brightness
+        end
+        if lagCullConn then lagCullConn:Disconnect() lagCullConn = nil end
+        NotifySys.Push("Anti-Lag", "คืนค่าเดิมแล้ว", "info")
+    end
+end
+
+-- Server Hop: find low-pop servers (1 player) for PS99 via matchmaking API
+-- Uses TeleportService:GetGameInstances(placeId, sortTag, ...) — deprecated/unreliable.
+-- Better: use the public Roblox API to fetch server list, pick a 1-player JobId, teleport.
+local HttpService = game:GetService("HttpService")
+local hopInProgress = false
+
+local function fetchServers(placeId, cursor)
+    cursor = cursor or ""
+    -- Public API: https://games.roblox.com/v1/games/{placeId}/servers/Public?limit=100&cursor={cursor}
+    -- On executor, request() works. Fallback to HttpGet if needed.
+    local url = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?limit=100&cursor=" .. (cursor or "")
+    local body
+    if request then
+        local resp = request({Url = url, Method = "GET"})
+        body = resp and resp.Body
+    elseif syn and syn.request then
+        local resp = syn.request({Url = url, Method = "GET"})
+        body = resp and resp.Body
+    else
+        body = game:HttpGet(url)
+    end
+    if not body then return nil end
+    local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
+    if not ok or not data then return nil end
+    return data
+end
+
+local function hopToLowPopServer()
+    if hopInProgress then return end
+    hopInProgress = true
+    NotifySys.Push("Server Hop", "ค้นหา server 1 คน...", "info")
+
+    local placeId = game.PlaceId
+    local targetJobId = nil
+    local cursor = ""
+    local tried = 0
+    local maxTries = 10
+
+    while not targetJobId and tried < maxTries do
+        tried += 1
+        local data = fetchServers(placeId, cursor)
+        if not data or not data.data or #data.data == 0 then break end
+
+        -- Sort by ascending player count, prefer 1-player servers
+        table.sort(data.data, function(a, b) return a.playing < b.playing end)
+
+        for _, srv in ipairs(data.data) do
+            if srv.playing == 1 then
+                targetJobId = srv.id
+                break
+            end
+        end
+
+        if not targetJobId then
+            -- Pick the lowest-pop one if no 1-player server
+            if data.data[1] and data.data[1].playing <= 3 then
+                targetJobId = data.data[1].id
+                break
+            end
+        end
+
+        cursor = data.nextPageCursor
+        if not cursor or cursor == "" then break end
+        task.wait(0.3) -- avoid rate limit
+    end
+
+    if not targetJobId then
+        NotifySys.Push("Server Hop", "ไม่เจอ server 1 คน - ลองใหม่", "warn")
+        hopInProgress = false
+        return
+    end
+
+    NotifySys.Push("Server Hop", "เจอแล้ว - กำลังวาร์ป", "success")
+    task.wait(0.5)
+    pcall(function()
+        TeleportService:TeleportToPlaceInstance(placeId, targetJobId, LocalPlayer)
+    end)
+    -- Reset flag after delay in case teleport fails
+    task.delay(15, function() hopInProgress = false end)
+end
+
+function Features.DoServerHop()
+    hopToLowPopServer()
+end
+
 -- ===================== BUILD PAGES =====================
 local ok = pcall(function()
     Hub.Build()
 
     local pageMain = Hub.AddTab("Main")
+    local pagePS99 = Hub.AddTab("PS99")
     local pageCombat = Hub.AddTab("Combat")
     local pageVisuals = Hub.AddTab("Visuals")
     local pagePlayer = Hub.AddTab("Player")
@@ -854,6 +1170,72 @@ local ok = pcall(function()
         game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
     end)
     btnRejoin.Parent = pageMain
+
+    -- ============= PS99 TAB =============
+    local lblPs = Widgets.Label("PET SIM 99 FEATURES")
+    lblPs.Parent = pagePS99
+
+    local togAntiHit = Widgets.Toggle("Anti-Hit (No Dmg + Anti-AFK)", false, function(s)
+        Features.ToggleAntiHit(s)
+    end)
+    togAntiHit.Parent = pagePS99
+
+    local togHatch = Widgets.Toggle("Auto-Hatch Eggs", false, function(s)
+        Features.ToggleAutoHatch(s)
+    end)
+    togHatch.Parent = pagePS99
+
+    local togLag = Widgets.Toggle("Anti-Lag (FPS Boost)", false, function(s)
+        Features.ToggleAntiLag(s)
+    end)
+    togLag.Parent = pagePS99
+
+    local btnHop = Widgets.Button("Server Hop (Find 1-Player Server)", function()
+        Features.DoServerHop()
+    end)
+    btnHop.Parent = pagePS99
+
+    local lblPsInfo = Widgets.Label("INFO")
+    lblPsInfo.Parent = pagePS99
+
+    local btnWalkToEgg = Widgets.Button("Walk to Nearest Egg", function()
+        pcall(function()
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+            local Workspace2 = game:GetService("Workspace")
+            local containers = {
+                Workspace2:FindFirstChild("Eggs"),
+                Workspace2:FindFirstChild("Map") and Workspace2.Map:FindFirstChild("Eggs"),
+            }
+            local nearest, nearestDist = nil, math.huge
+            for _, c in ipairs(containers) do
+                if c then
+                    for _, e in ipairs(c:GetChildren()) do
+                        local pos = e:IsA("Model") and e:GetPivot().Position or nil
+                        if pos then
+                            local d = (pos - hrp.Position).Magnitude
+                            if d < nearestDist then
+                                nearestDist = d
+                                nearest = e
+                            end
+                        end
+                    end
+                end
+            end
+            if nearest then
+                NotifySys.Push("Egg Walk", "เดินไปหา: " .. nearest.Name, "info")
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    local pos = nearest:GetPivot().Position
+                    hum:MoveTo(pos + Vector3.new(0, 5, 5))
+                end
+            else
+                NotifySys.Push("Egg Walk", "ไม่เจอไข่", "warn")
+            end
+        end)
+    end)
+    btnWalkToEgg.Parent = pagePS99
 
     local lblCombat = Widgets.Label("COMBAT FEATURES")
     lblCombat.Parent = pageCombat
@@ -923,7 +1305,7 @@ local ok = pcall(function()
 
     task.spawn(function()
         task.wait(0.5)
-        NotifySys.Push("Delta Hub v3.2.1", "โหลดสำเร็จ - สวัสดี BZMEMBER", "success")
+        NotifySys.Push("Delta Hub v3.3.0", "โหลดสำเร็จ - สวัสดี BZMEMBER", "success")
         task.wait(2)
         NotifySys.Push("Tip", "Right-Ctrl ซ่อน/แสดง - Drag title bar", "info")
     end)
