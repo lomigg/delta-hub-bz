@@ -1,7 +1,7 @@
--- main.lua — Delta Hub v3.3.0 — auto-published by BluezyGPT
+-- main.lua — Delta Hub v3.4.0 — auto-published by BluezyGPT
 -- Architecture: clean MVC, anti-duplicate, mobile+PC responsive GUI
 -- Repo: lomigg/delta-hub-bz (public), branch: main
--- v3.3.0: PS99 features — Anti-Hit, Auto-Hatch, Anti-Lag, Server-Hop
+-- v3.4.0: Steal An Egg features (verified internals from real game scripts)
 
 -- ===================== SERVICES =====================
 local Players           = game:GetService("Players")
@@ -492,7 +492,7 @@ function Hub.Build()
     versionLabel.TextColor3 = Theme.TextDim
     versionLabel.TextXAlignment = Enum.TextXAlignment.Left
     versionLabel.TextYAlignment = Enum.TextYAlignment.Center
-    versionLabel.Text = "v3.3.0 - BluezyGPT"
+    versionLabel.Text = "v3.4.0 - BluezyGPT"
     versionLabel.Parent = titleBar
 
     local closeBtn = Instance.new("TextButton")
@@ -826,173 +826,379 @@ function Features.ToggleGodMode(state)
     end
 end
 
--- ===================== PS99 FEATURES =====================
--- Pet Simulator 99 specific features
+-- ===================== SAE FEATURES =====================
+-- Steal An Egg (PlaceId 107778070777162) specific features
+-- All internals verified from working free scripts:
+--   miracleverytime/miraclehub-stealegg, chaocauminhlason/steal-an-egg, etc.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TeleportService   = game:GetService("TeleportService")
 local Lighting          = game:GetService("Lighting")
 local Workspace         = game:GetService("Workspace")
+local HttpService2      = game:GetService("HttpService")
 
--- Anti-Hit: anti-AFK + dodge + no damage taken + can't be hit by enemies
-local antiHitConn, antiAfkConn
-function Features.ToggleAntiHit(state)
-    Features.AntiHit = state
-    if antiHitConn then antiHitConn:Disconnect() antiHitConn = nil end
-    if antiAfkConn then antiAfkConn:Disconnect() antiAfkConn = nil end
-    if state then
-        -- (1) Anti-damage: keep humanoid state ForcedSeated=false, no break joints
-        --     PS99 doesn't have combat damage on player char, but other games do.
-        antiHitConn = RunService.Heartbeat:Connect(function()
-            local char = LocalPlayer.Character
-            if not char then return end
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            if not hum then return end
-            -- Force full health + breakable false on all body parts
-            if hum.Health < hum.MaxHealth then
-                hum.Health = hum.MaxHealth
-            end
-            for _, p in ipairs(char:GetChildren()) do
-                if p:IsA("BasePart") then
-                    p.CanBreak = false
-                end
-            end
-        end)
-        trackConn(antiHitConn)
+-- SAE PlaceId — sanity check
+local SAE_PLACE_ID = 107778070777162
+local isSAE = (game.PlaceId == SAE_PLACE_ID)
 
-        -- (2) Anti-AFK: bypass Roblox's 20-min idle kick
-        local VU = game:GetService("VirtualUser")
-        antiAfkConn = LocalPlayer.Idled:Connect(function()
-            VU:CaptureController()
-            VU:ClickButton2(Vector2.new())
-            task.wait(0.5)
-            VU:Button1Down(Vector2.new())
-            task.wait(0.5)
-            VU:Button1Up(Vector2.new())
-        end)
-        trackConn(antiAfkConn)
-    end
+-- ======== Module loader (cached) ========
+local function safeRequire(getModule)
+    local ok, mod = pcall(getModule)
+    if ok and type(mod) == "table" then return mod end
+    return nil
 end
 
--- Auto-Hatch Eggs (PS99)
--- PS99 egg system: eggs are in workspace, hatch via remote
--- Layout in PS99: workspace.Eggs holds egg models, hatching is via
--- ReplicatedStorage.Network.HatchEgg remote with egg name argument.
--- We try multiple known layouts and bail cleanly on each failure.
-local hatchConn
-local lastHatch = 0
-local function findEggRemotes()
-    -- Try common PS99 remote paths
-    local paths = {
-        {ReplicatedStorage, "Network", "HatchEgg"},
-        {ReplicatedStorage, "Network", "HatchEgg2"},
-        {ReplicatedStorage, "Remotes", "HatchEgg"},
-        {ReplicatedStorage, "Events", "HatchEgg"},
-        {ReplicatedStorage, "HatchEgg"},
-    }
-    for _, path in ipairs(paths) do
-        local obj = path[1]
-        local ok = true
-        for i = 2, #path do
-            if obj then
-                obj = obj:FindFirstChild(path[i])
-            end
+-- Cached module references (lazily loaded)
+local EggState_m, AreaEggSlotIdentity_m, PlotState_m, PlotCmds_m
+local Network_m, EggCmds_m, AssetCmds_m, BaseUpgrade_m
+local ToolGameplayGuard_m, NotificationCmds_m, Save_m
+
+local function loadModules()
+    if not isSAE then return end
+    local Client = ReplicatedStorage:FindFirstChild("Client")
+    local Shared = ReplicatedStorage:FindFirstChild("Shared")
+    if not Client then return end
+
+    EggState_m        = safeRequire(function() return require(Client.EggState) end)
+    AreaEggSlotIdentity_m = Shared and safeRequire(function() return require(Shared.Util.AreaEggSlotIdentity) end) or nil
+    PlotState_m       = safeRequire(function() return require(Client.PlotState) end)
+    PlotCmds_m        = safeRequire(function() return require(Client.PlotCmds) end)
+    Network_m         = safeRequire(function() return require(Client.Network) end)
+    EggCmds_m         = safeRequire(function() return require(Client.EggCmds) end)
+    AssetCmds_m       = safeRequire(function() return require(Client.AssetCmds) end)
+    BaseUpgrade_m     = safeRequire(function() return require(Client.BaseUpgrade) end)
+    ToolGameplayGuard_m = safeRequire(function() return require(Client.ToolGameplayGuard) end)
+    NotificationCmds_m = safeRequire(function() return require(Client.NotificationCmds.Message) end)
+    Save_m            = Shared and safeRequire(function() return require(Shared.Save) end) or nil
+end
+
+-- Run once at script load
+pcall(loadModules)
+
+-- Helper: get character, humanoid, root
+local function getChar()
+    local char = LocalPlayer.Character
+    if not char then return nil, nil, nil end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+    return char, hum, root
+end
+
+-- Helper: tween to position via Humanoid.MoveTo + AssemblyLinearVelocity propulsion
+local function moveTo(target, opts)
+    opts = opts or {}
+    local _, hum, root = getChar()
+    if not (hum and root) or hum.Health <= 0 then return false end
+
+    local speed = math.clamp(opts.speed or 200, 16, 300)
+    if math.abs(hum.WalkSpeed - speed) > 1 then
+        pcall(function() hum.WalkSpeed = speed end)
+    end
+
+    local arrived = false
+    local timeout = ((target - root.Position).Magnitude / speed) + 8
+    local t0 = os.clock()
+    while os.clock() - t0 < timeout do
+        _, hum, root = getChar()
+        if not (hum and root) or hum.Health <= 0 then break end
+        if opts.onStep and opts.onStep() then
+            pcall(function() hum:MoveTo(root.Position) end)
+            return false
         end
-        if obj and (obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction")) then
-            return obj
+        local delta = target - root.Position
+        local flatDist = Vector3.new(delta.X, 0, delta.Z).Magnitude
+        if flatDist < 5 then
+            arrived = true
+            break
         end
+        local dir = delta.Unit
+        pcall(function() hum:MoveTo(target) end)
+        pcall(function()
+            root.AssemblyLinearVelocity = Vector3.new(
+                dir.X * speed,
+                root.AssemblyLinearVelocity.Y,
+                dir.Z * speed
+            )
+        end)
+        task.wait(0.03)
+    end
+    return arrived
+end
+
+-- ======== Auto Steal (Anti-hit + auto egg collect) ========
+-- Pipeline: find target egg -> tween to it -> CarryFieldEgg -> bring back to safe zone
+local stealActive = false
+local stealThread = nil
+local stealStats = { stolen = 0, failed = 0 }
+
+local function getSafeZoneTarget()
+    -- Use player's plot PetArea as fallback, then SeparationLine gate
+    if PlotState_m then
+        local ok, plot = pcall(PlotState_m.ResolvePlot, LocalPlayer)
+        if ok and type(plot) == "table" and plot.PetArea and plot.PetArea:IsA("BasePart") then
+            return plot.PetArea.Position
+        end
+    end
+    -- Fallback: SeparationLine (back side = base)
+    local areas = Workspace:FindFirstChild("__OBJECTS")
+    areas = areas and areas:FindFirstChild("Areas")
+    local sep = areas and areas:FindFirstChild("SeparationLine")
+    if sep and sep:IsA("BasePart") then
+        return sep.Position - sep.CFrame.LookVector * 10
     end
     return nil
 end
 
-local function findEggsInWorkspace()
-    -- PS99 eggs typically live in workspace.Eggs or workspace.Map.Eggs
-    local containers = {
-        Workspace:FindFirstChild("Eggs"),
-        Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("Eggs"),
-        Workspace:FindFirstChild("World") and Workspace.World:FindFirstChild("Eggs"),
-    }
-    local eggs = {}
-    for _, c in ipairs(containers) do
-        if c then
-            for _, e in ipairs(c:GetChildren()) do
-                -- Egg model has a PrimaryPart or a Hitbox
-                if e:IsA("Model") or e:IsA("BasePart") then
-                    table.insert(eggs, e)
-                end
+local function isCarryingEgg()
+    if not EggState_m or not EggState_m.ReadFieldEggs then return false end
+    local ok, rows = pcall(function() return EggState_m.ReadFieldEggs() end)
+    if not ok or type(rows) ~= "table" then return false end
+    for _, r in ipairs(rows.Records or {}) do
+        if r.State == "Carried" and r.CarrierUserId == LocalPlayer.UserId then
+            return true
+        end
+    end
+    return false
+end
+
+local function findStealTarget(root)
+    if not EggState_m or not EggState_m.ReadFieldEggs then return nil end
+    local ok, rows = pcall(function() return EggState_m.ReadFieldEggs() end)
+    if not ok or type(rows) ~= "table" then return nil end
+
+    local best, bestD = nil, math.huge
+    local bestDrop, bestDropD = nil, math.huge
+    for _, r in ipairs(rows.Records or {}) do
+        if (r.State == "Slot" or r.State == "Dropped") and r.BottomCFrame then
+            local pos = r.BottomCFrame.Position
+            local d = (pos - root.Position).Magnitude
+            if r.State == "Dropped" then
+                if d < bestDropD then bestDropD, bestDrop = d, r end
+            elseif d < bestD then
+                bestD, best = d, r
             end
         end
     end
-    return eggs
+    return bestDrop or best
 end
 
-local function safeHatchNearest()
-    local now = tick()
-    if now - lastHatch < 1.5 then return end -- debounce
-    lastHatch = now
-
-    pcall(function()
-        local char = LocalPlayer.Character
-        if not char then return end
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
-
-        local eggs = findEggsInWorkspace()
-        if #eggs == 0 then return end
-
-        -- Find nearest egg within 50 studs
-        local nearest, nearestDist = nil, 50
-        for _, e in ipairs(eggs) do
-            local pos = e:IsA("Model") and e:GetPivot().Position
-                     or e:IsA("BasePart") and e.Position
-            if pos then
-                local d = (pos - hrp.Position).Magnitude
-                if d < nearestDist then
-                    nearestDist = d
-                    nearest = e
-                end
-            end
-        end
-        if not nearest then return end
-
-        local remote = findEggRemotes()
-        if remote then
-            if remote:IsA("RemoteEvent") then
-                remote:FireServer(nearest.Name, 1) -- single hatch
-            elseif remote:IsA("RemoteFunction") then
-                pcall(function() remote:InvokeServer(nearest.Name, 1) end)
-            end
+local function safeCarryEgg(rec)
+    if not EggState_m or not EggState_m.CarryFieldEgg then return false, "no_module" end
+    local slotKey = nil
+    if AreaEggSlotIdentity_m and rec.Uid then
+        local okK, key = pcall(function()
+            return AreaEggSlotIdentity_m.SlotKey(rec.AreaId, rec.NestId)
+        end)
+        if okK then slotKey = key end
+    end
+    pcall(function() LocalPlayer:SetAttribute("AreaId", rec.AreaId) end)
+    task.wait(0.15)
+    local result, done = nil, false
+    local th = task.spawn(function()
+        local success, okBool, errMsg = pcall(EggState_m.CarryFieldEgg, rec.Uid, slotKey)
+        if not success then
+            result = { ok = false, err = tostring(okBool) }
         else
-            -- Fallback: fire ProximityPrompt if egg has one
-            local prompt = nearest:FindFirstChildWhichIsA("ProximityPrompt", true)
-            if prompt then
-                fireproximityprompt(prompt, 0)
-            end
+            result = { ok = okBool == true, err = okBool == true and nil or tostring(errMsg) }
+        end
+        done = true
+    end)
+    local t0 = os.clock()
+    while not done and os.clock() - t0 < 8 do task.wait(0.05) end
+    if not done then
+        pcall(task.cancel, th)
+        return false, "TIMEOUT"
+    end
+    return result.ok, result.err
+end
+
+local function enterGameplayArea()
+    local _, hum, root = getChar()
+    if not (hum and root) then return false end
+    local areas = Workspace:FindFirstChild("__OBJECTS")
+    areas = areas and areas:FindFirstChild("Areas")
+    local sep = areas and areas:FindFirstChild("SeparationLine")
+    if not sep or not sep:IsA("BasePart") then return false end
+    local gate = sep.Position + Vector3.new(0, 2, 0) + sep.CFrame.LookVector * 2
+    local gateBack = sep.Position + Vector3.new(0, 2, 0) - sep.CFrame.LookVector * 6
+    pcall(function() hum.WalkSpeed = 45 end)
+    if (root.Position - gateBack).Magnitude > 3 then
+        pcall(function() root.CFrame = CFrame.lookAt(gateBack, gate) end)
+        task.wait(0.3)
+    end
+    pcall(function() hum:MoveTo(gate) end)
+    local t0 = os.clock()
+    while os.clock() - t0 < 6 do
+        task.wait(0.05)
+        local _, _, r3 = getChar()
+        if not r3 then break end
+        if (r3.Position - gate).Magnitude < 3 then break end
+    end
+    pcall(function() hum:MoveTo(gate + sep.CFrame.LookVector * 5) end)
+    task.wait(0.5)
+    return true
+end
+
+local function startStealLoop()
+    if stealActive then return end
+    if not EggState_m then
+        NotifySys.Push("SAE Steal", "EggState not loaded - rejoin game", "error")
+        return
+    end
+    stealActive = true
+    stealThread = task.spawn(function()
+        NotifySys.Push("SAE Steal", "Auto steal started", "success")
+        while stealActive do
+            pcall(function()
+                local _, _, root = getChar()
+                if not root then return end
+                if isCarryingEgg() then
+                    -- Bring egg back to safe zone
+                    local sz = getSafeZoneTarget()
+                    if not sz then return end
+                    pcall(function()
+                        local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+                        if hum then hum:UnequipTools() end
+                    end)
+                    local dropped = false
+                    moveTo(sz, {
+                        speed = 250,
+                        onStep = function()
+                            if not isCarryingEgg() then
+                                dropped = true
+                                return true
+                            end
+                            return false
+                        end,
+                    })
+                    if dropped or not isCarryingEgg() then
+                        NotifySys.Push("SAE Steal", "Egg dropped - retrying", "warn")
+                        task.wait(0.3)
+                    else
+                        -- Wait for server claim
+                        local t0 = os.clock()
+                        while os.clock() - t0 < 20 do
+                            if not isCarryingEgg() then break end
+                            task.wait(0.1)
+                        end
+                        if not isCarryingEgg() then
+                            stealStats.stolen = stealStats.stolen + 1
+                            NotifySys.Push("SAE Steal", "Delivered! Total: " .. stealStats.stolen, "success")
+                        else
+                            -- Force drop
+                            if EggState_m.DropFieldEgg then
+                                pcall(function() EggState_m.DropFieldEgg(nil) end)
+                            end
+                        end
+                        task.wait(0.5)
+                    end
+                else
+                    -- Find next egg
+                    local target = findStealTarget(root)
+                    if not target then
+                        task.wait(1.5)
+                    else
+                        if moveTo(target.BottomCFrame.Position, { speed = 250 }) then
+                            local okC, errC = safeCarryEgg(target)
+                            if okC then
+                                NotifySys.Push("SAE Steal", "Egg picked: " .. tostring(target.AssetCategory or target.Uid), "info")
+                            else
+                                if errC and tostring(errC):find("gameplay area") then
+                                    enterGameplayArea()
+                                    local okC2 = safeCarryEgg(target)
+                                    if not okC2 then
+                                        stealStats.failed = stealStats.failed + 1
+                                        task.wait(0.5)
+                                    end
+                                else
+                                    stealStats.failed = stealStats.failed + 1
+                                    task.wait(0.5)
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+            task.wait(0.1)
         end
     end)
 end
 
-function Features.ToggleAutoHatch(state)
-    Features.AutoHatch = state
-    if hatchConn then hatchConn:Disconnect() hatchConn = nil end
-    if state then
-        hatchConn = RunService.Heartbeat:Connect(function()
-            safeHatchNearest()
-        end)
-        trackConn(hatchConn)
-        NotifySys.Push("Auto-Hatch", "เริ่มรวบไข่ PS99", "success")
-    else
-        NotifySys.Push("Auto-Hatch", "หยุดแล้ว", "info")
+local function stopStealLoop()
+    stealActive = false
+    if stealThread then
+        pcall(task.cancel, stealThread)
+        stealThread = nil
     end
 end
 
--- Anti-Lag: kill shadows, particles, trails, lower texture quality, cull distant parts
+function Features.ToggleAutoSteal(state)
+    Features.AutoSteal = state
+    if state then startStealLoop() else stopStealLoop() end
+end
+
+-- ======== Anti-Hit (for SAE: anti-AFK + safe-zone dodge) ========
+local antiHitConn, antiAfkConn, antiAfkMoveThread
+function Features.ToggleAntiHit(state)
+    Features.AntiHit = state
+    -- Clean previous
+    if antiHitConn then antiHitConn:Disconnect() antiHitConn = nil end
+    if antiAfkConn then antiAfkConn:Disconnect() antiAfkConn = nil end
+    if antiAfkMoveThread then pcall(task.cancel, antiAfkMoveThread) antiAfkMoveThread = nil end
+
+    if state then
+        -- (1) Anti-damage: keep humanoid full health
+        antiHitConn = RunService.Heartbeat:Connect(function()
+            local _, hum = getChar()
+            if not hum then return end
+            if hum.Health < hum.MaxHealth and hum.MaxHealth > 0 then
+                pcall(function() hum.Health = hum.MaxHealth end)
+            end
+            pcall(function()
+                if hum.PlatformStand then hum.PlatformStand = false end
+            end)
+        end)
+        trackConn(antiHitConn)
+
+        -- (2) Anti-AFK via VirtualUser (idle kick bypass)
+        local VU = game:GetService("VirtualUser")
+        antiAfkConn = LocalPlayer.Idled:Connect(function()
+            pcall(function()
+                VU:CaptureController()
+                VU:ClickButton2(Vector2.new())
+                task.wait(0.3)
+                VU:Button1Down(Vector2.new())
+                task.wait(0.3)
+                VU:Button1Up(Vector2.new())
+            end)
+        end)
+        trackConn(antiAfkConn)
+
+        -- (3) Subtle idle motion (defeat "didn't move" detection)
+        antiAfkMoveThread = task.spawn(function()
+            while Features.AntiHit do
+                local _, _, root = getChar()
+                if root then
+                    local offsetX = (math.random() - 0.5) * 1.0
+                    local offsetZ = (math.random() - 0.5) * 1.0
+                    local targetCF = root.CFrame + Vector3.new(offsetX, 0, offsetZ)
+                    pcall(function()
+                        TweenService:Create(root, TweenInfo.new(0.35, Enum.EasingStyle.Quad),
+                            { CFrame = targetCF }):Play()
+                    end)
+                end
+                task.wait(20 + math.random() * 10)
+            end
+        end)
+    end
+end
+
+-- ======== Anti-Lag (universal — kill particles/shadows/cull distant) ========
 local lagSavedSettings = {}
 local lagCullConn
 function Features.ToggleAntiLag(state)
     Features.AntiLag = state
     if state then
-        -- Save and override lighting
         lagSavedSettings.GlobalShadows = Lighting.GlobalShadows
         lagSavedSettings.FogEnd = Lighting.FogEnd
         lagSavedSettings.Brightness = Lighting.Brightness
@@ -1000,7 +1206,6 @@ function Features.ToggleAntiLag(state)
         Lighting.FogEnd = 9e9
         Lighting.Brightness = 0
 
-        -- Kill textures globally
         for _, m in ipairs(Workspace:GetDescendants()) do
             pcall(function()
                 if m:IsA("Texture") or m:IsA("Decal") then
@@ -1017,55 +1222,41 @@ function Features.ToggleAntiLag(state)
             end)
         end
 
-        -- Distant part culler (kills parts >500 studs from player)
         lagCullConn = RunService.Heartbeat:Connect(function()
-            local char = LocalPlayer.Character
-            if not char then return end
-            local hrp = char:FindFirstChild("HumanoidRootPart")
-            if not hrp then return end
-            local origin = hrp.Position
+            local _, _, root = getChar()
+            if not root then return end
             for _, obj in ipairs(Workspace:GetChildren()) do
                 pcall(function()
-                    if obj:IsA("Model") and obj ~= char and not obj:IsA("Actor") then
-                        local dist = (obj:GetPivot().Position - origin).Magnitude
-                        if dist > 800 then
-                            obj.Parent = nil
-                        end
+                    if obj:IsA("Model") and obj ~= LocalPlayer.Character then
+                        local dist = (obj:GetPivot().Position - root.Position).Magnitude
+                        if dist > 800 then obj.Parent = nil end
                     end
                 end)
             end
         end)
         trackConn(lagCullConn)
 
-        -- Reduce player quality
         pcall(function()
             settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
             settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level04
         end)
 
-        NotifySys.Push("Anti-Lag", "ปรับลดทุกอย่าง - ลด lag", "success")
+        NotifySys.Push("Anti-Lag", "FPS boost ON", "success")
     else
-        -- Restore
         if lagSavedSettings.GlobalShadows ~= nil then
             Lighting.GlobalShadows = lagSavedSettings.GlobalShadows
             Lighting.FogEnd = lagSavedSettings.FogEnd
             Lighting.Brightness = lagSavedSettings.Brightness
         end
         if lagCullConn then lagCullConn:Disconnect() lagCullConn = nil end
-        NotifySys.Push("Anti-Lag", "คืนค่าเดิมแล้ว", "info")
+        NotifySys.Push("Anti-Lag", "Restored", "info")
     end
 end
 
--- Server Hop: find low-pop servers (1 player) for PS99 via matchmaking API
--- Uses TeleportService:GetGameInstances(placeId, sortTag, ...) — deprecated/unreliable.
--- Better: use the public Roblox API to fetch server list, pick a 1-player JobId, teleport.
-local HttpService = game:GetService("HttpService")
+-- ======== Server Hop (universal — find 1-player servers) ========
 local hopInProgress = false
-
 local function fetchServers(placeId, cursor)
     cursor = cursor or ""
-    -- Public API: https://games.roblox.com/v1/games/{placeId}/servers/Public?limit=100&cursor={cursor}
-    -- On executor, request() works. Fallback to HttpGet if needed.
     local url = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?limit=100&cursor=" .. (cursor or "")
     local body
     if request then
@@ -1078,7 +1269,7 @@ local function fetchServers(placeId, cursor)
         body = game:HttpGet(url)
     end
     if not body then return nil end
-    local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
+    local ok, data = pcall(function() return HttpService2:JSONDecode(body) end)
     if not ok or not data then return nil end
     return data
 end
@@ -1086,20 +1277,18 @@ end
 local function hopToLowPopServer()
     if hopInProgress then return end
     hopInProgress = true
-    NotifySys.Push("Server Hop", "ค้นหา server 1 คน...", "info")
+    NotifySys.Push("Server Hop", "Searching for 1-player server...", "info")
 
     local placeId = game.PlaceId
     local targetJobId = nil
     local cursor = ""
     local tried = 0
-    local maxTries = 10
 
-    while not targetJobId and tried < maxTries do
-        tried += 1
+    while not targetJobId and tried < 10 do
+        tried = tried + 1
         local data = fetchServers(placeId, cursor)
         if not data or not data.data or #data.data == 0 then break end
 
-        -- Sort by ascending player count, prefer 1-player servers
         table.sort(data.data, function(a, b) return a.playing < b.playing end)
 
         for _, srv in ipairs(data.data) do
@@ -1109,31 +1298,27 @@ local function hopToLowPopServer()
             end
         end
 
-        if not targetJobId then
-            -- Pick the lowest-pop one if no 1-player server
-            if data.data[1] and data.data[1].playing <= 3 then
-                targetJobId = data.data[1].id
-                break
-            end
+        if not targetJobId and data.data[1] and data.data[1].playing <= 3 then
+            targetJobId = data.data[1].id
+            break
         end
 
         cursor = data.nextPageCursor
         if not cursor or cursor == "" then break end
-        task.wait(0.3) -- avoid rate limit
+        task.wait(0.3)
     end
 
     if not targetJobId then
-        NotifySys.Push("Server Hop", "ไม่เจอ server 1 คน - ลองใหม่", "warn")
+        NotifySys.Push("Server Hop", "No 1-player server found - retry later", "warn")
         hopInProgress = false
         return
     end
 
-    NotifySys.Push("Server Hop", "เจอแล้ว - กำลังวาร์ป", "success")
+    NotifySys.Push("Server Hop", "Found - teleporting...", "success")
     task.wait(0.5)
     pcall(function()
         TeleportService:TeleportToPlaceInstance(placeId, targetJobId, LocalPlayer)
     end)
-    -- Reset flag after delay in case teleport fails
     task.delay(15, function() hopInProgress = false end)
 end
 
@@ -1141,12 +1326,93 @@ function Features.DoServerHop()
     hopToLowPopServer()
 end
 
+-- ======== SAE Helper: Teleport to Base ========
+function Features.TeleportToBase()
+    if not PlotCmds_m then
+        NotifySys.Push("SAE", "PlotCmds not loaded", "error")
+        return
+    end
+    local ok, cf = pcall(PlotCmds_m.GetRespawnPointCFrame)
+    if not ok or typeof(cf) ~= "CFrame" then
+        NotifySys.Push("SAE", "No respawn point", "error")
+        return
+    end
+    local _, _, root = getChar()
+    if not root then return end
+    pcall(function()
+        TweenService:Create(root, TweenInfo.new(0.4, Enum.EasingStyle.Quad),
+            { CFrame = cf }):Play()
+    end)
+    NotifySys.Push("SAE", "Teleported to base", "success")
+end
+
+-- ======== SAE Helper: Hatch Ready Eggs ========
+function Features.HatchReadyEggs()
+    if not EggState_m then
+        NotifySys.Push("SAE", "EggState not loaded", "error")
+        return 0
+    end
+    local myRecords = {}
+    if EggState_m.ReadOwnedEggs then
+        local ok, recs = pcall(function() return EggState_m.ReadOwnedEggs() end)
+        if ok and type(recs) == "table" then myRecords = recs end
+    end
+    local hatched = 0
+    for uid, _ in pairs(myRecords) do
+        if EggState_m.IsReadyToHatch and EggState_m.IsReadyToHatch(uid) then
+            if EggState_m.BeginHatch then
+                local ok = pcall(function() EggState_m.BeginHatch(uid) end)
+                if ok then hatched = hatched + 1 end
+            end
+        end
+    end
+    NotifySys.Push("SAE Hatch", "Hatched " .. hatched .. " eggs", "success")
+    return hatched
+end
+
+-- ======== SAE Helper: Skip Growth All ========
+function Features.SkipGrowthAll()
+    if not EggState_m or not EggState_m.BeginSkipGrowth then
+        NotifySys.Push("SAE", "SkipGrowth unavailable", "error")
+        return 0
+    end
+    local myRecords = {}
+    if EggState_m.ReadOwnedEggs then
+        local ok, recs = pcall(function() return EggState_m.ReadOwnedEggs() end)
+        if ok and type(recs) == "table" then myRecords = recs end
+    end
+    local skipped = 0
+    for uid, _ in pairs(myRecords) do
+        local ok = pcall(function() EggState_m.BeginSkipGrowth(uid) end)
+        if ok then skipped = skipped + 1 end
+    end
+    NotifySys.Push("SAE", "Skipped growth on " .. skipped .. " eggs", "success")
+    return skipped
+end
+
+-- ======== SAE Helper: Upgrade Base ========
+function Features.UpgradeBase()
+    if not BaseUpgrade_m or not BaseUpgrade_m.PurchaseNextTier then
+        NotifySys.Push("SAE", "BaseUpgrade unavailable", "error")
+        return false
+    end
+    local ok, res = pcall(BaseUpgrade_m.PurchaseNextTier)
+    if ok and res == true then
+        NotifySys.Push("SAE", "Base upgraded!", "success")
+    else
+        NotifySys.Push("SAE", "Upgrade failed (not enough cash?)", "warn")
+    end
+    return ok and res == true
+end
+
+
+
 -- ===================== BUILD PAGES =====================
 local ok = pcall(function()
     Hub.Build()
 
     local pageMain = Hub.AddTab("Main")
-    local pagePS99 = Hub.AddTab("PS99")
+    local pageSAE = Hub.AddTab("SAE")
     local pageCombat = Hub.AddTab("Combat")
     local pageVisuals = Hub.AddTab("Visuals")
     local pagePlayer = Hub.AddTab("Player")
@@ -1171,71 +1437,57 @@ local ok = pcall(function()
     end)
     btnRejoin.Parent = pageMain
 
-    -- ============= PS99 TAB =============
-    local lblPs = Widgets.Label("PET SIM 99 FEATURES")
-    lblPs.Parent = pagePS99
+    -- ============= STEAL AN EGG TAB =============
+    local lblSae = Widgets.Label("STEAL AN EGG (verified)")
+    lblSae.Parent = pageSAE
 
-    local togAntiHit = Widgets.Toggle("Anti-Hit (No Dmg + Anti-AFK)", false, function(s)
+    local togSteal = Widgets.Toggle("Auto Steal Eggs", false, function(s)
+        Features.ToggleAutoSteal(s)
+    end)
+    togSteal.Parent = pageSAE
+
+    local togAntiHit = Widgets.Toggle("Anti-Hit + Anti-AFK", false, function(s)
         Features.ToggleAntiHit(s)
     end)
-    togAntiHit.Parent = pagePS99
-
-    local togHatch = Widgets.Toggle("Auto-Hatch Eggs", false, function(s)
-        Features.ToggleAutoHatch(s)
-    end)
-    togHatch.Parent = pagePS99
+    togAntiHit.Parent = pageSAE
 
     local togLag = Widgets.Toggle("Anti-Lag (FPS Boost)", false, function(s)
         Features.ToggleAntiLag(s)
     end)
-    togLag.Parent = pagePS99
+    togLag.Parent = pageSAE
 
-    local btnHop = Widgets.Button("Server Hop (Find 1-Player Server)", function()
+    local lblSaeActions = Widgets.Label("QUICK ACTIONS")
+    lblSaeActions.Parent = pageSAE
+
+    local btnHop = Widgets.Button("Server Hop (1-Player Server)", function()
         Features.DoServerHop()
     end)
-    btnHop.Parent = pagePS99
+    btnHop.Parent = pageSAE
 
-    local lblPsInfo = Widgets.Label("INFO")
-    lblPsInfo.Parent = pagePS99
-
-    local btnWalkToEgg = Widgets.Button("Walk to Nearest Egg", function()
-        pcall(function()
-            local char = LocalPlayer.Character
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            if not hrp then return end
-            local Workspace2 = game:GetService("Workspace")
-            local containers = {
-                Workspace2:FindFirstChild("Eggs"),
-                Workspace2:FindFirstChild("Map") and Workspace2.Map:FindFirstChild("Eggs"),
-            }
-            local nearest, nearestDist = nil, math.huge
-            for _, c in ipairs(containers) do
-                if c then
-                    for _, e in ipairs(c:GetChildren()) do
-                        local pos = e:IsA("Model") and e:GetPivot().Position or nil
-                        if pos then
-                            local d = (pos - hrp.Position).Magnitude
-                            if d < nearestDist then
-                                nearestDist = d
-                                nearest = e
-                            end
-                        end
-                    end
-                end
-            end
-            if nearest then
-                NotifySys.Push("Egg Walk", "เดินไปหา: " .. nearest.Name, "info")
-                local hum = char:FindFirstChildOfClass("Humanoid")
-                if hum then
-                    local pos = nearest:GetPivot().Position
-                    hum:MoveTo(pos + Vector3.new(0, 5, 5))
-                end
-            else
-                NotifySys.Push("Egg Walk", "ไม่เจอไข่", "warn")
-            end
-        end)
+    local btnTpBase = Widgets.Button("Teleport to Base", function()
+        Features.TeleportToBase()
     end)
-    btnWalkToEgg.Parent = pagePS99
+    btnTpBase.Parent = pageSAE
+
+    local btnHatch = Widgets.Button("Hatch Ready Eggs", function()
+        Features.HatchReadyEggs()
+    end)
+    btnHatch.Parent = pageSAE
+
+    local btnSkip = Widgets.Button("Skip Growth All", function()
+        Features.SkipGrowthAll()
+    end)
+    btnSkip.Parent = pageSAE
+
+    local btnUpgrade = Widgets.Button("Upgrade Base", function()
+        Features.UpgradeBase()
+    end)
+    btnUpgrade.Parent = pageSAE
+
+    local lblSaeInfo = Widgets.Label("VERIFIED INTERNALS USED")
+    lblSaeInfo.Parent = pageSAE
+    local lblSaeDetail = Widgets.Label("EggState, PlotState, PlotCmds, BaseUpgrade, Network")
+    lblSaeDetail.Parent = pageSAE
 
     local lblCombat = Widgets.Label("COMBAT FEATURES")
     lblCombat.Parent = pageCombat
@@ -1305,7 +1557,7 @@ local ok = pcall(function()
 
     task.spawn(function()
         task.wait(0.5)
-        NotifySys.Push("Delta Hub v3.3.0", "โหลดสำเร็จ - สวัสดี BZMEMBER", "success")
+        NotifySys.Push("Delta Hub v3.4.0", "Loaded - Hello BZMEMBER", "success")
         task.wait(2)
         NotifySys.Push("Tip", "Right-Ctrl ซ่อน/แสดง - Drag title bar", "info")
     end)
